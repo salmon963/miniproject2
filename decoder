@@ -1,0 +1,169 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define BITS_PER_CHAR 7  // 每個字符由 7 個位元組成
+
+// 定義 CharInfo 結構來儲存 CSV 中讀取的字符信息
+ struct CharInfo {
+    char character[4]; // 儲存 UTF-8 字符
+    int count;                  // 計數出現次數
+    double probability;         // 該字符出現的機率
+    char bin[8];                // 該字符的二進位表示法
+};
+
+// 從二進位文件中讀取 7 個位元，並存儲到 bits 陣列中
+void read7Bits(FILE *file, unsigned char *bits, int *currentByte, int *tempCount, int *byte) {
+    *tempCount = 0;  // 重置 tempCount
+
+    // 持續讀取直到獲得 7 個位元或檔案結尾
+    while (*tempCount < BITS_PER_CHAR) {
+        // 當 currentByte 為 0 時，讀取一個新 byte
+        if (*currentByte == 0) {
+            *byte = fgetc(file);  // 讀取一個 byte
+            if (*byte == EOF) break;  // 如果到檔案末尾，退出
+        }
+
+        // 提取 byte 中的當前位元，並將其存入 bits 陣列
+        bits[*tempCount] = ((*byte >> (7 - *currentByte)) & 1) + '0';  // 將位元轉換為字符 '0' 或 '1'
+        (*currentByte)++;  // 更新 currentByte，指向下一個位元
+        (*tempCount)++;    // 更新 tempCount，計數已經讀取的位元數
+
+        // 如果當前 byte 的 8 個位元已經讀取完，重置 currentByte
+        if (*currentByte == 8) {
+            *currentByte = 0;
+        }
+    }
+
+    // 如果在檔案末尾退出迴圈，需確保 bits 陣列已填滿
+    bits[*tempCount] = '\0';  // 添加字串結尾符號，以確保輸出正確
+}
+
+// 比較函數，用於 qsort 函數對結構體進行排序
+int compareCharInfo(const void *a, const void *b) {
+    const struct CharInfo *charA = (const struct CharInfo *)a;
+    const struct CharInfo *charB = (const struct CharInfo *)b;
+    return strcmp(charA->bin, charB->bin);  // 按二進制表示法排序
+}
+
+// 二分搜索函數，從已排序的 charInfo 陣列中查找匹配的二進位表示法
+int binarySearch(struct CharInfo *charInfo, int size, const char *bits) {
+    int low = 0, high = size - 1;
+    while (low <= high) {
+        int mid = (low + high) / 2;
+        int cmp = strcmp(bits, charInfo[mid].bin);
+        if (cmp == 0) {
+            return mid;  // 找到匹配
+        } else if (cmp < 0) {
+            high = mid - 1;  // 縮小到左邊區間
+        } else {
+            low = mid + 1;  // 縮小到右邊區間
+        }
+    }
+    return -1;  // 未找到
+}
+
+int main(int argc, char **argv) {
+    // 檢查命令行參數
+    if (argc < 4) {
+        fprintf(stderr, "用法: %s <output_txt> <input_csv> <input_bin>\n", argv[0]);
+        return 1;
+    }
+
+    // 開啟 CSV 文件
+    FILE *csv = fopen(argv[2], "r");
+    if (!csv) {
+        perror("無法開啟 CSV 檔案");
+        return 1;
+    }
+
+    // 開啟二進位文件
+    FILE *bin = fopen(argv[3], "rb");
+    if (!bin) {
+        perror("無法開啟二進位檔案");
+        fclose(csv);
+        return 1;
+    }
+
+    struct CharInfo charInfo[65536];  // 儲存最多 65536 個字符的信息
+    int index = 0;  // 跟踪字符數量
+    char line[256]; // 存儲 CSV 資料的每一行
+
+    // 從 CSV 文件讀取每行數據並填充 charInfo 結構體
+    while (fgets(line, sizeof(line), csv)) {
+        char *token = strtok(line, ",");
+
+        // 去除雙引號並處理逗號
+        if (token[0] == '"') {
+            token++;
+            token[strlen(token) - 1] = '\0';
+        }
+
+        // 將解析到的字符存入 character 欄位
+        strcpy((char *)charInfo[index].character, token);
+
+        // 解析計數和機率
+        token = strtok(NULL, ",");
+        charInfo[index].count = atoi(token);
+        token = strtok(NULL, ",");
+        charInfo[index].probability = atof(token);
+
+        // 解析二進位表示法
+        token = strtok(NULL, "\n");
+        strcpy(charInfo[index].bin, token);
+
+        index++;  // 更新索引
+    }
+
+    // 對 charInfo 陣列進行排序
+    qsort(charInfo, index, sizeof(struct CharInfo), compareCharInfo);
+
+    // 開啟輸出文本文件
+    FILE *txt = fopen(argv[1], "w");
+    if (!txt) {
+        perror("無法開啟輸出文字檔案");
+        fclose(csv);
+        fclose(bin);
+        return 1;
+    }
+
+    unsigned char bits[BITS_PER_CHAR + 1] = {0};  // 用來存儲從二進位文件讀取的 7 位元
+    int currentByte = 0;  // 當前處理的位元位置
+    int byte = 0;         // 存儲讀取的 byte
+    int tempCount = 0;    // 計算已讀取的位元數
+
+    // 從二進位文件中逐個讀取 7 位元，並匹配字符
+    while (1) {
+        read7Bits(bin, bits, &currentByte, &tempCount, &byte);  // 調用函數讀取 7 個位元
+
+        // 檢查是否已經到達文件結尾，如果到達則退出迴圈
+        if (feof(bin)) break;
+
+        // 使用二分搜索查找匹配的字符
+        int foundIndex = binarySearch(charInfo, index, (char *)bits);
+        if (foundIndex != -1) {
+            // 特殊字符處理
+            if (strcmp((char *)charInfo[foundIndex].character, "\\r") == 0) {
+                fprintf(txt, "\r");
+            } else if (strcmp((char *)charInfo[foundIndex].character, "\\n") == 0) {
+                fprintf(txt, "\n");
+            } else if (strcmp((char *)charInfo[foundIndex].character, "\\t") == 0) {
+                fprintf(txt, "\t");
+            } else if (strcmp((char *)charInfo[foundIndex].character, ",") == 0) {
+                fprintf(txt, ",");  // 處理逗號的輸出
+            } else {
+                fprintf(txt, "%s", charInfo[foundIndex].character);  // 正常字符輸出
+            }
+        }
+
+        tempCount = 0;  // 重置 tempCount 以便讀取下一個字符
+    }
+
+    // 關閉所有文件
+    fclose(csv);
+    fclose(bin);
+    fclose(txt);
+
+    return 0;  // 成功結束
+}
+

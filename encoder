@@ -1,0 +1,205 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <locale.h>
+
+#define MAX_CHAR_SIZE 1000  // 假設最多有 1000 種不同字元
+
+// 定義一個結構體來存儲字元、頻率、機率和編碼
+typedef struct {
+    char character[5];  // UTF-8 字符可以是 1 至 4 個字節，外加一個 null 結束符
+    int frequency;      // 字元在標準輸入中的出現次數
+    double probability; // 字元出現的機率 (頻率 / 總字元數)
+    char codeword[8];   // 7 位編碼 + 結尾符
+} CharFrequency;
+
+// 比較函數，用於 qsort() 排序（根據頻率從小到大，如果頻率相同，按 UTF-8 字符順序排列）
+int compare(const void *a, const void *b) {
+    CharFrequency *charA = (CharFrequency *)a;
+    CharFrequency *charB = (CharFrequency *)b;
+
+    // 先根據頻率排序（頻率小的排在前面）
+    if (charB->frequency < charA->frequency) {
+        return 1;
+    } else if (charB->frequency > charA->frequency) {
+        return -1;
+    }
+
+    // 如果頻率相同，則按 UTF-8 字符順序排序
+    return strcmp(charA->character, charB->character);
+}
+
+// 解析 UTF-8 字元，返回該字元的長度（字節數）
+int get_utf8_char_length(unsigned char c) {
+    if (c < 0x80) return 1;        // 1 byte (ASCII)
+    else if (c < 0xE0) return 2;   // 2 bytes
+    else if (c < 0xF0) return 3;   // 3 bytes
+    else return 4;                 // 4 bytes
+}
+
+int main(int argc, char **argv) {
+    if (argc < 4) {
+        fprintf(stderr, "Usage: %s <input_file> <output_csv> <output_bin>\n", argv[0]);
+        return 1;
+    }
+    
+    const char *input_file = argv[1];
+    const char *output_csv = argv[2];
+    const char *output_bin = argv[3];
+    
+    setlocale(LC_ALL, "");  // 設置區域為 UTF-8
+
+    CharFrequency charFrequencies[MAX_CHAR_SIZE];
+    int charCount = 0;  // 用來計算不同字元的數量
+    int total_chars = 0;  // 總字元數（每個 UTF-8 字符計為一個）
+    char buffer[5];  // 用來暫存 UTF-8 字符，最大 4 字節 + 結尾符號
+
+    // 打開輸入文件
+    FILE *inputFile = fopen(input_file, "r");
+    // 打開 CSV 文件進行寫入
+    FILE *csvFile = fopen(output_csv, "w");
+    // 打開二進制文件進行寫入
+    FILE *binaryFile = fopen(output_bin, "wb");
+
+    if (!inputFile || !csvFile || !binaryFile) {
+        fprintf(stderr, "Error opening files.\n");
+        return 1;
+    }
+
+    // 讀取文件中的每個字元並計算其頻率
+    int ch;
+    while ((ch = fgetc(inputFile)) != EOF) {
+        // 獲取當前字元的 UTF-8 長度
+        int utf8_len = get_utf8_char_length((unsigned char)ch);
+
+        // 讀取該字元的完整 UTF-8 字符
+        buffer[0] = ch;
+        for (int i = 1; i < utf8_len; i++) {
+            buffer[i] = fgetc(inputFile);
+        }
+        buffer[utf8_len] = '\0';  // 添加 null 結尾
+
+        // 檢查字元是否已經在 charFrequencies 陣列中
+        int freqIndex = -1;
+        for (int i = 0; i < charCount; i++) {
+            if (strcmp(charFrequencies[i].character, buffer) == 0) {
+                freqIndex = i;
+                break;
+            }
+        }
+
+        // 如果這是新字元，則添加到 charFrequencies 陣列中
+        if (freqIndex == -1) {
+            strcpy(charFrequencies[charCount].character, buffer);
+            charFrequencies[charCount].frequency = 1;
+            charCount++;
+        } else {
+            // 否則增加該字元的頻率
+            charFrequencies[freqIndex].frequency++;
+        }
+
+        // 增加總字元數
+        total_chars++;
+    }
+
+    // 計算每個字元的機率
+    for (int i = 0; i < charCount; i++) {
+        charFrequencies[i].probability = (double)charFrequencies[i].frequency / total_chars;
+    }
+
+    // 將字元根據頻率從大到小排序，如果頻率相同則按 UTF-8 字符排序
+    qsort(charFrequencies, charCount, sizeof(CharFrequency), compare);
+
+    // 為每個字元分配 7 位的二進位編碼
+    int codewordIndex = 0;
+    for (int n = 0; n < charCount; n++) {
+        int tempValue = codewordIndex;
+        
+        // 初始化每個字符的編碼為 7 位二進制
+        for (int i = 6; i >= 0; i--) {  // 這裡是 6，因為我們只需要7位
+            charFrequencies[n].codeword[i] = (tempValue % 2) + '0';
+            tempValue = tempValue / 2;
+        }
+        charFrequencies[n].codeword[7] = '\0';  // 確保編碼字符串以 '\0' 結束
+
+        codewordIndex++;  
+    }
+
+    // 輸出結果到 CSV 文件
+    for (int i = 0; i < charCount; i++) {
+    char *character = charFrequencies[i].character;
+    int freq = charFrequencies[i].frequency;
+    double probability = charFrequencies[i].probability;
+    char *codeword = charFrequencies[i].codeword;
+
+    // 處理 ASCII 和 UTF-8 字符分開
+    if (get_utf8_char_length((unsigned char)character[0]) == 1) {
+        if (character[0] == '\n') {
+            fprintf(csvFile, "\"\\n\",%d,%.7f,%s\n", freq, probability, codeword);  // 處理換行符
+        } else if (character[0] == '\r') {
+            fprintf(csvFile, "\"\\r\",%d,%.7f,%s\n", freq, probability, codeword);  // 處理回車符
+        } else if (character[0] == '\t') {
+            fprintf(csvFile, "\"\\t\",%d,%.7f,%s\n", freq, probability, codeword);  // 處理制表符
+        } else if (character[0] == ',') {
+            fprintf(csvFile, "\",\",%d,%.7f,%s\n", freq, probability, codeword);    // 處理逗號
+        } else if (character[0] == '\"') {
+            fprintf(csvFile, "\"\"\",%d,%.7f,%s\n", freq, probability, codeword); // 處理雙引號
+        } else {
+            fprintf(csvFile, "\"%c\",%d,%.7f,%s\n", character[0], freq, probability, codeword);  // 處理普通 ASCII 字符
+        }
+    } else {
+        // 處理非 ASCII 字符（UTF-8 字符）
+        fprintf(csvFile, "\"%s\",%d,%.7f,%s\n", character, freq, probability, codeword);  // 直接輸出 UTF-8 字符
+    }
+}
+
+
+    // 將編碼輸出到二進制文件
+    fseek(inputFile, 0, SEEK_SET); // 重新讀取文件
+    unsigned char currentByte = 0;
+    int tempCount = 0;  // 累積的位數
+
+    while ((ch = fgetc(inputFile)) != EOF) {
+        // 獲取當前字元的 UTF-8 長度
+        int utf8_len = get_utf8_char_length((unsigned char)ch);
+        buffer[0] = ch;
+        for (int i = 1; i < utf8_len; i++) {
+            buffer[i] = fgetc(inputFile);
+        }
+        buffer[utf8_len] = '\0';  // 添加 null 結尾
+
+        CharFrequency *charFreq = NULL;
+        for (int i = 0; i < charCount; i++) {
+            if (strcmp(charFrequencies[i].character, buffer) == 0) {
+                charFreq = &charFrequencies[i];
+                break;
+            }
+        }
+
+        if (charFreq != NULL) {
+            // 將 codeword 寫入二進制文件
+            for (int j = 0; j < 7; j++) {
+                currentByte = (currentByte << 1) | (charFreq->codeword[j] - '0');
+                tempCount++;
+                if (tempCount == 8) {
+                    fputc(currentByte, binaryFile);
+                    tempCount = 0;
+                    currentByte = 0;
+                }
+            }
+        }
+    }
+
+    // 處理最後不足 8 位的情況
+    if (tempCount > 0) {
+        currentByte <<= (8 - tempCount);  // 將剩餘的位數補到高位，低位自動補 0
+        fputc(currentByte, binaryFile);   // 寫入最終的 byte
+    }
+
+    // 關閉文件
+    fclose(inputFile);
+    fclose(csvFile);
+    fclose(binaryFile);
+
+    return 0;
+}
